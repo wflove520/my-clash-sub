@@ -40,20 +40,25 @@ def generate_sub():
     except Exception as e:
         return Response(f"Error: {str(e)}", status=500)
 
-# 接口2：Clash 专属的智能更新入口 (自动打破缓存)
+
+
+# 接口2：智能更新入口 (自动打破缓存，且支持多客户端)
 @app.route('/auto')
 def auto_update():
-    # 1. 自动获取你当前的 Render 域名
+    # 1. 动态获取目标客户端类型 (如果不填，默认依然是 clash)
+    client_target = request.args.get('target', 'clash')
+    
+    # 2. 自动获取你当前的 Render 源域名
     source_url = f"{request.host_url.rstrip('/')}/clash"
     encoded_url = urllib.parse.quote(source_url)
     
-    # 2. 生成实时时间戳 (比如 1712345678)
+    # 3. 生成实时时间戳防缓存
     t = int(time.time())
     
-    # 3. 拼接给转换器的终极链接，利用 _t=时间戳 骗过它的缓存
-    sub_url = f"https://api.wcc.best/sub?target=clash&url={encoded_url}&insert=false&_t={t}"
+    # 4. 拼接终极链接，把 client_target 传给转换器！
+    sub_url = f"https://api.wcc.best/sub?target={client_target}&url={encoded_url}&insert=false&_t={t}"
     
-    # 4. 下达 302 指令，让 Clash 软件自动跳转过去下载！
+    # 5. 跳转去下载
     return redirect(sub_url, code=302)
 
 if __name__ == "__main__":
