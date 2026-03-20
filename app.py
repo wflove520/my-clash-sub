@@ -1,34 +1,11 @@
-import base64
-import json
-import urllib.parse
-import requests
-import yaml
-from Crypto.Cipher import AES
-from Crypto.Util.Padding import unpad
-from flask import Flask, Response
-
-app = Flask(__name__)
-
-# --- 核心配置 ---
-K1 = bytes.fromhex('1712ea6dbb9ceabb1712ea6dbb9ceabb1712ea6dbb9ceabb1712ea6dbb9ceabb')
-K2 = b'bitboo8888oobtib'
-IV = b'\x00' * 16
-URL = "https://81.71.98.184/api/node_list"
-HDR = {"user-agent": "Dart/3.8 (dart:io)", "content-type": "application/json"}
-PAYLOAD = "IzlE5qur1yao+SgMPGpYzOVX5I8oYPXUhR7qxkOve0piNGSpeW360VAPnQMczjvPVDlE7+obIvn24RhELIWG+zjTQsHQZb4Z1bbx1tNfdTAhh3G27ZihoqRYgrUtLv0FQ/xZG0N9C7yKNW8h87vmxGwMIy9SX26anvDN8zKYtzcsZDaueL7VNZY6PKjmHgeWFEQz+EInr3btMFtVuh2Kl7SJQBsb+esx35qZ5lS6FCRlMHSlmyWCu0P0o8qJFbp/QWdl5c0PsOnaXKsiaT8eKg=="
-
-def dec(d, k):
-    return unpad(AES.new(k, AES.MODE_CBC, IV).decrypt(base64.b64decode(d)), 16)
-
 @app.route('/clash')
 def generate_clash_yaml():
     try:
-        # 1. 抓取最新节点
         requests.packages.urllib3.disable_warnings()
         r = requests.post(URL, headers=HDR, data=PAYLOAD, verify=False, timeout=10)
         nodes_data = json.loads(dec(r.text, K1))['data']['share_node']
         
-        # 2. 构造你本地那种极简、完美的 Clash 骨架
+        # 1. 核心修复：添加 url 和 interval 测速参数，并去掉 DIRECT
         clash_config = {
             "port": 7890,
             "socks-port": 7891,
@@ -40,7 +17,9 @@ def generate_clash_yaml():
                 {
                     "name": "Proxy",
                     "type": "select",
-                    "proxies": ["DIRECT"]
+                    "url": "http://www.gstatic.com/generate_204",  # 告诉 FlClash 去哪里测速
+                    "interval": 300,                              # 告诉 FlClash 每隔多久自动测速
+                    "proxies": []
                 }
             ],
             "rules": [
@@ -48,15 +27,18 @@ def generate_clash_yaml():
             ]
         }
 
-        # 3. 解析并填充节点 (使用多行格式，绝不压缩)
         for n in nodes_data:
             link = dec(n['link'].replace('enc://', ''), K2).decode('utf-8', 'ignore')
             fixed_link = link.replace('obfs%3Bobfs%3Dhttp%3Bhost', 'obfs-local%3Bobfs%3Dhttp%3Bobfs-host')
             
             parsed = urllib.parse.urlparse(fixed_link)
-            userinfo = parsed.username + '=' * (-len(parsed.username) % 4)
-            decoded_userinfo = base64.urlsafe_b64decode(userinfo).decode('utf-8')
-            method, password = decoded_userinfo.split(':', 1)
+            userinfo = parsed.username
+            if userinfo:
+                userinfo += '=' * (-len(userinfo) % 4)
+                decoded_userinfo = base64.urlsafe_b64decode(userinfo).decode('utf-8')
+                method, password = decoded_userinfo.split(':', 1)
+            else:
+                continue
 
             proxy = {
                 "name": n['node_name'],
@@ -83,12 +65,17 @@ def generate_clash_yaml():
             clash_config["proxies"].append(proxy)
             clash_config["proxy-groups"][0]["proxies"].append(n['node_name'])
 
-        # 4. 转化为完美的 YAML 文本
         yaml_str = yaml.dump(clash_config, allow_unicode=True, sort_keys=False)
-        return Response(yaml_str, mimetype='text/yaml; charset=utf-8')
+        
+        # 2. 核心修复：强制伪装成 .yaml 文件下载，并声明配置更新间隔
+        return Response(
+            yaml_str, 
+            mimetype='application/x-yaml; charset=utf-8',
+            headers={
+                "Content-Disposition": "attachment; filename=config.yaml",
+                "profile-update-interval": "60"
+            }
+        )
 
     except Exception as e:
         return Response(f"Error: {str(e)}", status=500)
-
-if __name__ == "__main__":
-    app.run(host='0.0.0.0', port=8080)
