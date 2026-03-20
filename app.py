@@ -1,3 +1,26 @@
+import base64
+import json
+import urllib.parse
+import requests
+import yaml
+from Crypto.Cipher import AES
+from Crypto.Util.Padding import unpad
+from flask import Flask, Response
+
+# 初始化 Flask 应用（就是这里刚才被删掉了）
+app = Flask(__name__)
+
+# --- 核心配置 ---
+K1 = bytes.fromhex('1712ea6dbb9ceabb1712ea6dbb9ceabb1712ea6dbb9ceabb1712ea6dbb9ceabb')
+K2 = b'bitboo8888oobtib'
+IV = b'\x00' * 16
+URL = "https://81.71.98.184/api/node_list"
+HDR = {"user-agent": "Dart/3.8 (dart:io)", "content-type": "application/json"}
+PAYLOAD = "IzlE5qur1yao+SgMPGpYzOVX5I8oYPXUhR7qxkOve0piNGSpeW360VAPnQMczjvPVDlE7+obIvn24RhELIWG+zjTQsHQZb4Z1bbx1tNfdTAhh3G27ZihoqRYgrUtLv0FQ/xZG0N9C7yKNW8h87vmxGwMIy9SX26anvDN8zKYtzcsZDaueL7VNZY6PKjmHgeWFEQz+EInr3btMFtVuh2Kl7SJQBsb+esx35qZ5lS6FCRlMHSlmyWCu0P0o8qJFbp/QWdl5c0PsOnaXKsiaT8eKg=="
+
+def dec(d, k):
+    return unpad(AES.new(k, AES.MODE_CBC, IV).decrypt(base64.b64decode(d)), 16)
+
 @app.route('/clash')
 def generate_clash_yaml():
     try:
@@ -5,7 +28,7 @@ def generate_clash_yaml():
         r = requests.post(URL, headers=HDR, data=PAYLOAD, verify=False, timeout=10)
         nodes_data = json.loads(dec(r.text, K1))['data']['share_node']
         
-        # 1. 核心修复：添加 url 和 interval 测速参数，并去掉 DIRECT
+        # 基础骨架：加入了 url 和 interval，并且去掉了 DIRECT 防止测速卡住
         clash_config = {
             "port": 7890,
             "socks-port": 7891,
@@ -17,8 +40,8 @@ def generate_clash_yaml():
                 {
                     "name": "Proxy",
                     "type": "select",
-                    "url": "http://www.gstatic.com/generate_204",  # 告诉 FlClash 去哪里测速
-                    "interval": 300,                              # 告诉 FlClash 每隔多久自动测速
+                    "url": "http://www.gstatic.com/generate_204",
+                    "interval": 300,
                     "proxies": []
                 }
             ],
@@ -27,6 +50,7 @@ def generate_clash_yaml():
             ]
         }
 
+        # 遍历解析节点
         for n in nodes_data:
             link = dec(n['link'].replace('enc://', ''), K2).decode('utf-8', 'ignore')
             fixed_link = link.replace('obfs%3Bobfs%3Dhttp%3Bhost', 'obfs-local%3Bobfs%3Dhttp%3Bobfs-host')
@@ -65,9 +89,10 @@ def generate_clash_yaml():
             clash_config["proxies"].append(proxy)
             clash_config["proxy-groups"][0]["proxies"].append(n['node_name'])
 
+        # 生成 YAML
         yaml_str = yaml.dump(clash_config, allow_unicode=True, sort_keys=False)
         
-        # 2. 核心修复：强制伪装成 .yaml 文件下载，并声明配置更新间隔
+        # 伪装成文件下载，完美兼容 FlClash
         return Response(
             yaml_str, 
             mimetype='application/x-yaml; charset=utf-8',
@@ -79,3 +104,6 @@ def generate_clash_yaml():
 
     except Exception as e:
         return Response(f"Error: {str(e)}", status=500)
+
+if __name__ == "__main__":
+    app.run(host='0.0.0.0', port=8080)
