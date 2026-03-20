@@ -1,11 +1,11 @@
 import base64
 import json
-import time
 import urllib.parse
 import requests
+import yaml
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import unpad
-from flask import Flask, Response, redirect, request
+from flask import Flask, Response
 
 app = Flask(__name__)
 
@@ -20,46 +20,75 @@ PAYLOAD = "IzlE5qur1yao+SgMPGpYzOVX5I8oYPXUhR7qxkOve0piNGSpeW360VAPnQMczjvPVDlE7
 def dec(d, k):
     return unpad(AES.new(k, AES.MODE_CBC, IV).decrypt(base64.b64decode(d)), 16)
 
-# 接口1：只负责输出纯净 Base64 节点（供转换器拉取用）
 @app.route('/clash')
-def generate_sub():
+def generate_clash_yaml():
     try:
+        # 1. 抓取最新节点
         requests.packages.urllib3.disable_warnings()
         r = requests.post(URL, headers=HDR, data=PAYLOAD, verify=False, timeout=10)
         nodes_data = json.loads(dec(r.text, K1))['data']['share_node']
         
-        links = []
+        # 2. 构造你本地那种极简、完美的 Clash 骨架
+        clash_config = {
+            "port": 7890,
+            "socks-port": 7891,
+            "allow-lan": False,
+            "mode": "Rule",
+            "log-level": "info",
+            "proxies": [],
+            "proxy-groups": [
+                {
+                    "name": "Proxy",
+                    "type": "select",
+                    "proxies": ["DIRECT"]
+                }
+            ],
+            "rules": [
+                "MATCH,Proxy"
+            ]
+        }
+
+        # 3. 解析并填充节点 (使用多行格式，绝不压缩)
         for n in nodes_data:
             link = dec(n['link'].replace('enc://', ''), K2).decode('utf-8', 'ignore')
-            fixed_link = link.replace('obfs%3Bobfs%3Dhttp%3Bhost', 'obfs-local%3Bobfs%3Dhttp%3Bobfs-host') + '#' + n['node_name']
-            links.append(fixed_link)
+            fixed_link = link.replace('obfs%3Bobfs%3Dhttp%3Bhost', 'obfs-local%3Bobfs%3Dhttp%3Bobfs-host')
             
-        raw_text = '\n'.join(links)
-        b64_text = base64.b64encode(raw_text.encode('utf-8')).decode('utf-8')
-        return Response(b64_text, mimetype='text/plain; charset=utf-8')
+            parsed = urllib.parse.urlparse(fixed_link)
+            userinfo = parsed.username + '=' * (-len(parsed.username) % 4)
+            decoded_userinfo = base64.urlsafe_b64decode(userinfo).decode('utf-8')
+            method, password = decoded_userinfo.split(':', 1)
+
+            proxy = {
+                "name": n['node_name'],
+                "type": "ss",
+                "server": parsed.hostname,
+                "port": parsed.port,
+                "cipher": method,
+                "password": password
+            }
+
+            query = urllib.parse.parse_qs(parsed.query)
+            if 'plugin' in query:
+                plugin_str = query['plugin'][0]
+                if 'obfs-local' in plugin_str:
+                    proxy['plugin'] = 'obfs'
+                    opts = {}
+                    for item in plugin_str.split(';'):
+                        if '=' in item:
+                            k, v = item.split('=', 1)
+                            if k == 'obfs': opts['mode'] = v
+                            if k == 'obfs-host': opts['host'] = v
+                    proxy['plugin-opts'] = opts
+
+            clash_config["proxies"].append(proxy)
+            clash_config["proxy-groups"][0]["proxies"].append(n['node_name'])
+
+        # 4. 转化为完美的 YAML 文本
+        yaml_str = yaml.dump(clash_config, allow_unicode=True, sort_keys=False)
+        return Response(yaml_str, mimetype='text/yaml; charset=utf-8')
+
     except Exception as e:
         return Response(f"Error: {str(e)}", status=500)
-
-
-
-# 接口2：智能更新入口 (自动打破缓存，且支持多客户端)
-@app.route('/auto')
-def auto_update():
-    # 1. 动态获取目标客户端类型 (如果不填，默认依然是 clash)
-    client_target = request.args.get('target', 'clash')
-    
-    # 2. 自动获取你当前的 Render 源域名
-    source_url = f"{request.host_url.rstrip('/')}/clash"
-    encoded_url = urllib.parse.quote(source_url)
-    
-    # 3. 生成实时时间戳防缓存
-    t = int(time.time())
-    
-    # 4. 拼接终极链接，把 client_target 传给转换器！
-    sub_url = f"https://api.wcc.best/sub?target={client_target}&url={encoded_url}&insert=false&_t={t}"
-    
-    # 5. 跳转去下载
-    return redirect(sub_url, code=302)
 
 if __name__ == "__main__":
     app.run(host='0.0.0.0', port=8080)
