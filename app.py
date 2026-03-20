@@ -7,7 +7,6 @@ from Crypto.Cipher import AES
 from Crypto.Util.Padding import unpad
 from flask import Flask, Response
 
-# 初始化 Flask 应用（就是这里刚才被删掉了）
 app = Flask(__name__)
 
 # --- 核心配置 ---
@@ -24,11 +23,12 @@ def dec(d, k):
 @app.route('/clash')
 def generate_clash_yaml():
     try:
+        # 1. 抓取最新节点
         requests.packages.urllib3.disable_warnings()
         r = requests.post(URL, headers=HDR, data=PAYLOAD, verify=False, timeout=10)
         nodes_data = json.loads(dec(r.text, K1))['data']['share_node']
         
-        # 基础骨架：加入了 url 和 interval，并且去掉了 DIRECT 防止测速卡住
+        # 2. 构造你本地那种极简、完美的 Clash 骨架
         clash_config = {
             "port": 7890,
             "socks-port": 7891,
@@ -40,9 +40,7 @@ def generate_clash_yaml():
                 {
                     "name": "Proxy",
                     "type": "select",
-                    "url": "http://www.gstatic.com/generate_204",
-                    "interval": 300,
-                    "proxies": []
+                    "proxies": ["DIRECT"]
                 }
             ],
             "rules": [
@@ -50,19 +48,15 @@ def generate_clash_yaml():
             ]
         }
 
-        # 遍历解析节点
+        # 3. 解析并填充节点 (使用多行格式，绝不压缩)
         for n in nodes_data:
             link = dec(n['link'].replace('enc://', ''), K2).decode('utf-8', 'ignore')
             fixed_link = link.replace('obfs%3Bobfs%3Dhttp%3Bhost', 'obfs-local%3Bobfs%3Dhttp%3Bobfs-host')
             
             parsed = urllib.parse.urlparse(fixed_link)
-            userinfo = parsed.username
-            if userinfo:
-                userinfo += '=' * (-len(userinfo) % 4)
-                decoded_userinfo = base64.urlsafe_b64decode(userinfo).decode('utf-8')
-                method, password = decoded_userinfo.split(':', 1)
-            else:
-                continue
+            userinfo = parsed.username + '=' * (-len(parsed.username) % 4)
+            decoded_userinfo = base64.urlsafe_b64decode(userinfo).decode('utf-8')
+            method, password = decoded_userinfo.split(':', 1)
 
             proxy = {
                 "name": n['node_name'],
@@ -89,18 +83,9 @@ def generate_clash_yaml():
             clash_config["proxies"].append(proxy)
             clash_config["proxy-groups"][0]["proxies"].append(n['node_name'])
 
-        # 生成 YAML
+        # 4. 转化为完美的 YAML 文本
         yaml_str = yaml.dump(clash_config, allow_unicode=True, sort_keys=False)
-        
-        # 伪装成文件下载，完美兼容 FlClash
-        return Response(
-            yaml_str, 
-            mimetype='application/x-yaml; charset=utf-8',
-            headers={
-                "Content-Disposition": "attachment; filename=config.yaml",
-                "profile-update-interval": "60"
-            }
-        )
+        return Response(yaml_str, mimetype='text/yaml; charset=utf-8')
 
     except Exception as e:
         return Response(f"Error: {str(e)}", status=500)
